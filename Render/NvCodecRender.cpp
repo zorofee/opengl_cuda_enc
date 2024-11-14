@@ -1,6 +1,228 @@
 #include "NvCodecRender.h"
+#include <cuda_runtime.h>
+#include <cuda_gl_interop.h>
+#include <cuda.h>
+
+#include <GLES3/gl31.h>
+#include "ContextEGL.h"
+#include <cmath>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
+
+const char *vertexShaderSource = "#version 330 core\n"
+    "layout (location = 0) in vec3 aPos;\n"
+    "void main()\n"
+    "{\n"
+    "   gl_Position = vec4(aPos.x, aPos.y, aPos.z, 1.0);\n"
+    "}\0";
+const char *fragmentShaderSource = "#version 330 core\n"
+    "out vec4 FragColor;\n"
+    "uniform float inColor;\n"
+    "void main()\n"
+    "{\n"
+    "   FragColor = vec4(inColor, 0.5f, 0.2f, 1.0f);\n"
+    "}\n\0";
+
+unsigned int shaderProgram = 0;
+unsigned int vertexShader = 0;
+unsigned int fragmentShader = 0;
+unsigned int VBO, VAO,FBO,texId0,texId1;
+
+ContextEGL glContext;
+
+void BindTexture(int texId){
+    glBindFramebuffer(GL_FRAMEBUFFER, FBO); // Bind custom framebuffer
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texId, 0);
+}
+
+void InitRenderTexture(int width,int height){
+    // Step 1: Create FBO
+    glGenFramebuffers(1, &FBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, FBO);
+
+    // Step 2: Create Texture 0
+    glGenTextures(1, &texId0);
+    glBindTexture(GL_TEXTURE_2D, texId0);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // Step 3: Attach Texture to FBO
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texId0, 0);
+
+
+    // Step 2: Create Texture 0
+    glGenTextures(1, &texId1);
+    glBindTexture(GL_TEXTURE_2D, texId1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // Step 3: Attach Texture to FBO
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texId1, 0);
+
+    // Step 4: Check FBO status
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        // Handle errors here
+    }
+
+}
+
+void InitRender(){
+    glContext.Initialize();
+
+    vertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
+    glCompileShader(vertexShader);
+    // check for shader compile errors
+    int success;
+    char infoLog[512];
+    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+
+    // fragment shader
+    fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
+    glCompileShader(fragmentShader);
+    // check for shader compile errors
+    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+ 
+ 
+    shaderProgram = glCreateProgram();
+    glAttachShader(shaderProgram, vertexShader);
+    glAttachShader(shaderProgram, fragmentShader);
+    glLinkProgram(shaderProgram);
+    // check for linking errors
+    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
+
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+
+    float vertices[] = {
+        -1.0f, -1.0f, 0.0f, // left
+         1.0f, -1.0f, 0.0f, // right
+         0.0f,  1.0f, 0.0f  // top
+    };
+
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+    // bind the Vertex Array Object first, then bind and set vertex buffer(s), and then configure vertex attributes(s).
+    glBindVertexArray(VAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+   
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    glBindVertexArray(0);
+}
+
+float testColor = 0.0;
+void DoRender(){
+    glViewport(0, 0, glContext.GetWindowWidth(), glContext.GetWindowHiehgt()); 
+
+    GLint currentFBO;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &currentFBO);
+    
+    GLint readBuffer;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readBuffer);
+    
+    GLint drawBuffer;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawBuffer);
+    
+    // printf("current fbo --------- : %d" ,currentFBO);
+
+    glClearColor(0.5f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+
+    // draw our first triangle
+    glUseProgram(shaderProgram);
+    auto uInColor = glGetUniformLocation(shaderProgram, "inColor");
+    testColor += 0.01;
+    glUniform1f(uInColor,std::sin(testColor));
+
+    glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
+    glDrawArrays(GL_TRIANGLES, 0, 3);    
+}
+
+bool bwrite = true;
+void ReadPixel(int width,int height){
+    uint32_t bufferSize = width * height * 4;
+    uint8_t buf[bufferSize];
+    glReadPixels(0, 0, width, height, GL_RGBA,GL_UNSIGNED_BYTE,buf);
+    // printf("ReadPixels: %d,%d,%d,%d;%d,%d,%d,%d\n", buf[0], buf[1], buf[2], buf[3], buf[4], buf[5],buf[6], buf[7]);
+
+    if( bwrite ){
+        std::string path = "test.png";
+        void* data = static_cast<void*>(buf);
+        stbi_flip_vertically_on_write(true);
+        stbi_write_png(path.c_str(), width, height, 4, data, width * 4);
+        bwrite = false;
+    }
+
+}
+
 static CUcontext cuContext = NULL;
 simplelogger::Logger *logger = simplelogger::LoggerFactory::CreateConsoleLogger();
+
+//假设你使用标准的 GL_RGBA 格式和 GL_UNSIGNED_BYTE 类型上传纹理，pixelType 可以定义成：
+// typedef unsigned char pixelType; // 定义像素类型，可以根据需求选择不同的类型，如 float 或 unsigned char
+typedef float pixelType; // 定义像素类型，可以根据需求选择不同的类型，如 float 或 unsigned char
+
+void GlTex2Cuda(int glTex, int width, int height, CUdeviceptr device_frame_ptr, size_t pitch) {
+    // Step 1: 注册 OpenGL 纹理为 CUDA 图形资源
+    cudaGraphicsResource_t cudaResource;
+    cudaError_t err = cudaGraphicsGLRegisterImage(&cudaResource, glTex, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsReadOnly);
+    if (err != cudaSuccess) {
+        // 处理错误
+        printf("texid to cuda err0!");
+        return;
+    }
+    // Step 2: 映射资源
+    err = cudaGraphicsMapResources(1, &cudaResource, 0);
+    if (err != cudaSuccess) {
+        // 处理错误
+        printf("texid to cuda err1!");
+        return;
+    }
+    // Step 3: 获取 CUDA 可用的数组
+    cudaArray_t texture_ptr;
+    err = cudaGraphicsSubResourceGetMappedArray(&texture_ptr, cudaResource, 0, 0);
+    if (err != cudaSuccess) {
+        // 处理错误
+        printf("texid to cuda err2!");
+        return;
+    }
+
+    // Step 4: 将 CUDA 纹理数据拷贝到另一个 CUDA 设备内存
+    err = cudaMemcpy2DFromArray(device_frame_ptr, pitch, texture_ptr, 0, 0, width * sizeof(pixelType), height, cudaMemcpyDeviceToDevice);
+    if (err != cudaSuccess) {
+        // 处理错误
+        // printf("texid to cuda err3!");
+        std::cerr << "cudaMemcpy2DFromArray failed: " << cudaGetErrorString(err) << std::endl;
+        return;
+    }
+    // Step 5: 解锁资源
+    err = cudaGraphicsUnmapResources(1, &cudaResource, 0);
+    if (err != cudaSuccess) {
+        // 处理错误
+        printf("texid to cuda err4!");
+        return;
+    }
+    // 可选: 注销资源
+    err = cudaGraphicsUnregisterResource(cudaResource);
+    if (err != cudaSuccess) {
+        // 处理错误
+        printf("texid to cuda err5!");
+        return;
+    }
+    // printf("texid to cuda success!");
+}
+
+
 static uint32_t find_start_code(uint8_t *buf, uint32_t zeros_in_startcode)
 {
     uint32_t info;
@@ -107,6 +329,8 @@ NvCodecRender::NvCodecRender(const char *input, const char *output, int gpu_idx,
     demuxer_ = new FFmpegDemuxer(input);
     width_ = demuxer_->GetWidth();
     height_ = demuxer_->GetHeight();
+    printf("video w:%d , h:%d" , width_,height_);
+
     static std::once_flag flag;
     gpu_idx_ = gpu_idx;
 
@@ -116,12 +340,11 @@ NvCodecRender::NvCodecRender(const char *input, const char *output, int gpu_idx,
     dec_ = new NvDecoder(cuContext, true, FFmpeg2NvCodecId(demuxer_->GetVideoCodec()), true);
     //use_nvenc_ = SupportHardEnc(gpu_idx);
     use_nvenc_ = use_nvenc;
-    if (use_nvenc_) {
-        printf("use hard enc...\n");
-    } else {
-        printf("use soft enc...\n");
-    }
+
     EncInit();
+    InitRender();
+    InitRenderTexture(glContext.GetWindowWidth(),glContext.GetWindowHiehgt());
+    BindTexture(texId0);
     mp4_ = new MP4Writer(output);
 }
 NvCodecRender::~NvCodecRender()
@@ -155,98 +378,37 @@ int NvCodecRender::EncInit()
         v_bitrate_ = 4000000;
     }
     out_fps_ = v_fps_; // 输出帧率
-    if (use_nvenc_) {
-        std::string param1 = "-codec h264 -preset p4 -profile baseline -tuninginfo ultralowlatency -bf 0 "; // 编码参数，根据需求自行修改
-        std::string param2 = "-fps " + std::to_string(v_fps_) + " -gop " + std::to_string(2 * v_fps_) + " -bitrate " + std::to_string(v_bitrate_);
-        std::string sz_param = param1 + param2;
-        printf("sz_param:%s\n", sz_param.c_str());
-        int rgba_frame_pitch = width_ * 4;
-        int rgba_frame_size = rgba_frame_pitch * height_;
-        ck(cuMemAlloc(&ptr_image_enc_, rgba_frame_size));
-        eformat_ = NV_ENC_BUFFER_FORMAT_ABGR; //rgb
-        init_param_ = NvEncoderInitParam(sz_param.c_str());
-        enc_ = new NvEncoderCuda(cuContext, width_, height_, eformat_);
-        NV_ENC_INITIALIZE_PARAMS initialize_params = {NV_ENC_INITIALIZE_PARAMS_VER};
-        NV_ENC_CONFIG encode_config = {NV_ENC_CONFIG_VER};
-        initialize_params.encodeConfig = &encode_config;
-        enc_->CreateDefaultEncoderParams(&initialize_params, init_param_.GetEncodeGUID(), init_param_.GetPresetGUID(), init_param_.GetTuningInfo());
-        init_param_.SetInitParams(&initialize_params, eformat_);
-        enc_->CreateEncoder(&initialize_params);
-    } else {
-        h264_codec_ = avcodec_find_encoder(AV_CODEC_ID_H264);
-        h264_codec_ctx_ = avcodec_alloc_context3(h264_codec_);
-        h264_codec_ctx_->codec_type = AVMEDIA_TYPE_VIDEO;
-        h264_codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
-        h264_codec_ctx_->width = width_;
-        h264_codec_ctx_->height = height_;
-        h264_codec_ctx_->time_base.num = 1;
-        h264_codec_ctx_->time_base.den = v_fps_;
-        h264_codec_ctx_->bit_rate = v_bitrate_;
-        h264_codec_ctx_->gop_size = v_fps_ * 2;
-        h264_codec_ctx_->thread_count = 1;
-        h264_codec_ctx_->slices = 1; // 切片数量。 表示图片细分的数量。 用于并行解码。
-        /**
-         * 遇到问题：编码得到的h264文件播放时提示"non-existing PPS 0 referenced"
-         *  分析原因：未将pps sps 等信息写入
-         *  解决方案：加入标记AV_CODEC_FLAG2_LOCAL_HEADER
-         */
-        h264_codec_ctx_->flags |= AV_CODEC_FLAG2_LOCAL_HEADER;
-        h264_codec_ctx_->flags |= AV_CODEC_FLAG_LOW_DELAY;
-        av_opt_set(h264_codec_ctx_->priv_data, "preset", "ultrafast", 0);
-        av_opt_set(h264_codec_ctx_->priv_data, "tune", "zerolatency", 0);
-        av_opt_set(h264_codec_ctx_->priv_data, "profile", "baseline", 0);
-        if (avcodec_open2(h264_codec_ctx_, h264_codec_, NULL) < 0) {
-            printf("Failed to open encoder!\n");
-            avcodec_close(h264_codec_ctx_);
-            avcodec_free_context(&h264_codec_ctx_);
-            h264_codec_ = NULL;
-            h264_codec_ctx_ = NULL;
-            return -1;
-        }
-        sws_context_ = sws_getContext(h264_codec_ctx_->width, h264_codec_ctx_->height, AV_PIX_FMT_RGBA,
-                                      h264_codec_ctx_->width, h264_codec_ctx_->height, AV_PIX_FMT_YUV420P, SWS_FAST_BILINEAR, NULL, NULL, NULL);
-        yuv_frame_ = av_frame_alloc();
-        yuv_frame_->width = h264_codec_ctx_->width;
-        yuv_frame_->height = h264_codec_ctx_->height;
-        yuv_frame_->format = AV_PIX_FMT_YUV420P;
-        int ret = av_image_alloc(yuv_frame_->data, yuv_frame_->linesize, yuv_frame_->width, yuv_frame_->height, AV_PIX_FMT_YUV420P, 1);
-        if (ret < 0) {
-            printf("av_image_alloc failed\n");
-            return -1;
-        }
-        av_init_packet(&enc_packet_);
-    }
+
+    std::string param1 = "-codec h264 -preset p4 -profile baseline -tuninginfo ultralowlatency -bf 0 "; // 编码参数，根据需求自行修改
+    std::string param2 = "-fps " + std::to_string(v_fps_) + " -gop " + std::to_string(2 * v_fps_) + " -bitrate " + std::to_string(v_bitrate_);
+    std::string sz_param = param1 + param2;
+    printf("sz_param:%s\n", sz_param.c_str());
+    int rgba_frame_pitch = width_ * 4;
+    int rgba_frame_size = rgba_frame_pitch * height_;
+    ck(cuMemAlloc(&ptr_image_enc_, rgba_frame_size));
+    eformat_ = NV_ENC_BUFFER_FORMAT_ABGR; //rgb
+    init_param_ = NvEncoderInitParam(sz_param.c_str());
+    enc_ = new NvEncoderCuda(cuContext, width_, height_, eformat_);
+    NV_ENC_INITIALIZE_PARAMS initialize_params = {NV_ENC_INITIALIZE_PARAMS_VER};
+    NV_ENC_CONFIG encode_config = {NV_ENC_CONFIG_VER};
+    initialize_params.encodeConfig = &encode_config;
+    enc_->CreateDefaultEncoderParams(&initialize_params, init_param_.GetEncodeGUID(), init_param_.GetPresetGUID(), init_param_.GetTuningInfo());
+    init_param_.SetInitParams(&initialize_params, eformat_);
+    enc_->CreateEncoder(&initialize_params);
+
     return 0;
 }
 int NvCodecRender::EncDestory()
 {
-    if (use_nvenc_) {
-        if (enc_) {
-            enc_->DestroyEncoder();
-            delete enc_;
-            enc_ = NULL;
-        }
-
-        ck(cuMemFree(ptr_image_enc_));
-        ptr_image_enc_ = 0;
-
-    } else {
-        if (h264_codec_ctx_ != NULL) {
-            avcodec_close(h264_codec_ctx_);
-            avcodec_free_context(&h264_codec_ctx_);
-            h264_codec_ctx_ = NULL;
-        }
-        if (sws_context_ != NULL) {
-            sws_freeContext(sws_context_);
-            sws_context_ = NULL;
-        }
-        if (yuv_frame_) {
-            av_freep(&yuv_frame_->data[0]);
-            av_frame_free(&yuv_frame_);
-            yuv_frame_ = NULL;
-        }
-        av_packet_unref(&enc_packet_);
+    if (enc_) {
+        enc_->DestroyEncoder();
+        delete enc_;
+        enc_ = NULL;
     }
+
+    ck(cuMemFree(ptr_image_enc_));
+    ptr_image_enc_ = 0;
+
     return 0;
 }
 int NvCodecRender::Write2File(uint8_t *data, int len)
@@ -293,73 +455,48 @@ int NvCodecRender::Write2File(uint8_t *data, int len)
 }
 int NvCodecRender::EncFrame(void *ptr, int size)
 {
-    if (use_nvenc_) {
-        std::vector<std::vector<uint8_t>> vPacket;
-        if (ptr != NULL) {
-            const NvEncInputFrame *encoder_input_frame = enc_->GetNextInputFrame();
-            NvEncoderCuda::CopyToDeviceFrame(cuContext, ptr, 0, (CUdeviceptr)encoder_input_frame->inputPtr,
-                                             (int)encoder_input_frame->pitch,
-                                             enc_->GetEncodeWidth(),
-                                             enc_->GetEncodeHeight(),
-                                             CU_MEMORYTYPE_DEVICE, // CU_MEMORYTYPE_HOST,CU_MEMORYTYPE_DEVICE
-                                             encoder_input_frame->bufferFormat,
-                                             encoder_input_frame->chromaOffsets,
-                                             encoder_input_frame->numChromaPlanes);
-            enc_->EncodeFrame(vPacket);
-        } else {
-            enc_->EndEncode(vPacket);
-        }
-        for (std::vector<uint8_t> &packet : vPacket) {
-            // write to file
-            Write2File(packet.data(), packet.size());
-        }
+    std::vector<std::vector<uint8_t>> vPacket;
+    if (ptr != NULL) {
+        const NvEncInputFrame *encoder_input_frame = enc_->GetNextInputFrame();
+        //printf("*** encframe *** %d , %d" ,  enc_->GetEncodeWidth(),enc_->GetEncodeHeight());
+        NvEncoderCuda::CopyToDeviceFrame(cuContext, ptr, 0, (CUdeviceptr)encoder_input_frame->inputPtr,
+                                            (int)encoder_input_frame->pitch,
+                                            enc_->GetEncodeWidth(),
+                                            enc_->GetEncodeHeight(),
+                                            CU_MEMORYTYPE_DEVICE, // CU_MEMORYTYPE_HOST,CU_MEMORYTYPE_DEVICE
+                                            encoder_input_frame->bufferFormat,
+                                            encoder_input_frame->chromaOffsets,
+                                            encoder_input_frame->numChromaPlanes);
+        enc_->EncodeFrame(vPacket);
+        // printf("enc frame pitch 111 %d\n" , (int)encoder_input_frame->pitch);
     } else {
-        int ret;
-        if (ptr != NULL) {
-            // sws
-            AVFrame mat_frame;
-            avpicture_fill((AVPicture *)&mat_frame, ptr, AV_PIX_FMT_RGBA, width_, height_);
-            mat_frame.width = width_;
-            mat_frame.height = height_;
-            sws_scale(sws_context_, mat_frame.data, mat_frame.linesize, 0, mat_frame.height, yuv_frame_->data, yuv_frame_->linesize);
-            // enc
-            ret = avcodec_send_frame(h264_codec_ctx_, yuv_frame_);
-        } else { // fflush
-            // 编码：int avcodec_send_frame(AVCodecContext *avctx, const AVFrame *frame);frame=NULL
-            // 解码：int avcodec_send_packet(AVCodecContext *avctx, const AVPacket *avpkt);avpkt=NULL或者avpkt->data=NULL && avpkt->size=0
-            ret = avcodec_send_frame(h264_codec_ctx_, NULL);
-        }
-        while (ret >= 0) {
-            ret = avcodec_receive_packet(h264_codec_ctx_, &enc_packet_);
-            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                break;
-            } else if (ret < 0) {
-                printf("Error during encoding\n");
-                return -1;
-            }
-            Write2File(enc_packet_.data, enc_packet_.size);
-            av_packet_unref(&enc_packet_);
-        }
+        enc_->EndEncode(vPacket);
     }
+    for (std::vector<uint8_t> &packet : vPacket) {
+        // write to file
+        Write2File(packet.data(), packet.size());
+    } 
     return 0;
 }
 int NvCodecRender::Draw(unsigned char *rgba_frame, int w, int h)
 {
-    cv::Mat image(h, w, CV_8UC4, rgba_frame);
+    // cv::Mat image(h, w, CV_8UC4, rgba_frame);
 
-    cv::Rect rect(200, 200, 200, 200);
-    cv::Scalar rect_color(0, 255, 0);
-    cv::rectangle(image, rect, rect_color, 2);
+    // cv::Rect rect(200, 200, 200, 200);
+    // cv::Scalar rect_color(0, 255, 0);
+    // cv::rectangle(image, rect, rect_color, 2);
 
-    cv::Scalar text_color(0, 255, 0);
-    cv::putText(image, "BreakingY:kxsun@163.com", cv::Point(200, 150), cv::FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2);
+    // cv::Scalar text_color(0, 255, 0);
+    // cv::putText(image, "BreakingY:kxsun@163.com", cv::Point(200, 150), cv::FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2);
+    DoRender();
+    // BindTexture(texId0);
+    // glReadPixels(0, 0, width_, height_, GL_RGBA,GL_UNSIGNED_BYTE,rgba_frame);
     return 0;
 }
 int NvCodecRender::Render()
 {
     CUdeviceptr dp_rgba_frame = 0;
     std::unique_ptr<uint8_t[]> p_rgba_frame;
-
     // rgba
     int rgba_frame_pitch = width_ * 4;
     int rgba_frame_size = rgba_frame_pitch * height_;
@@ -372,25 +509,36 @@ int NvCodecRender::Render()
     do {
         int64_t pts;
         demuxer_->Demux(&p_video, &n_video_bytes, &pts);
-        uint8_t *p_frame;
-        int n_frame_returned = 0;
-        n_frame_returned = dec_->Decode(n_video_bytes > 0 ? p_video : NULL, n_video_bytes, CUVID_PKT_ENDOFPICTURE | CUVID_PKT_TIMESTAMP, pts); // CUVID_PKT_ENDOFPICTURE解码器立即输出，没有缓存，没有解码缓存时延;CUVID_PKT_TIMESTAMP返回原始时间戳
-        int i_matrix = dec_->GetVideoFormatInfo().video_signal_description.matrix_coefficients;
+        // uint8_t *p_frame;
+        int n_frame_returned = 1;
+        // n_frame_returned = dec_->Decode(n_video_bytes > 0 ? p_video : NULL, n_video_bytes, CUVID_PKT_ENDOFPICTURE | CUVID_PKT_TIMESTAMP, pts); // CUVID_PKT_ENDOFPICTURE解码器立即输出，没有缓存，没有解码缓存时延;CUVID_PKT_TIMESTAMP返回原始时间戳
+        // int i_matrix = dec_->GetVideoFormatInfo().video_signal_description.matrix_coefficients;
+        printf("*** n_video_bytes *** %d" , n_video_bytes);
         for (int i = 0; i < n_frame_returned; i++) {
             int64_t timestamp;
-            p_frame = dec_->GetFrame(&timestamp);
-            printf("Dec output timestamp:%ld\n", timestamp);
+            // p_frame = dec_->GetFrame(&timestamp);
+            // printf("Dec output timestamp:%ld\n", timestamp);
             total_frames_++;
-            Nv12ToColor32<RGBA32>(p_frame, width_, (uint8_t *)dp_rgba_frame, rgba_frame_pitch, width_, height_, i_matrix);
+            // Nv12ToColor32<RGBA32>(p_frame, width_, (uint8_t *)dp_rgba_frame, rgba_frame_pitch, width_, height_, i_matrix);
 
-            ck(cuMemcpyDtoH(p_rgba_frame.get(), dp_rgba_frame, rgba_frame_size));
-            Draw(p_rgba_frame.get(), width_, height_);
-            if (use_nvenc_) {
-                ck(cuMemcpyHtoD(ptr_image_enc_, p_rgba_frame.get(), rgba_frame_size));
-                EncFrame(ptr_image_enc_, rgba_frame_size);
-            } else {
-                EncFrame(p_rgba_frame.get(), rgba_frame_size);
+            //将结果从 GPU 内存传回 CPU 内存
+            //ck(cuMemcpyDtoH(p_rgba_frame.get(), dp_rgba_frame, rgba_frame_size));
+            //Draw(p_rgba_frame.get(), width_, height_);
+            DoRender();
+            // glFinish();
+
+            CUdeviceptr device_frame_ptr;
+            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&device_frame_ptr),rgba_frame_size);
+            if (err != cudaSuccess) {
+                printf("texid to cuda err2222!");
+                return ;
             }
+
+            // cudaMalloc((void**)&device_frame_ptr,rgba_frame_size);
+            const NvEncInputFrame *encoder_input_frame = enc_->GetNextInputFrame();
+            GlTex2Cuda(texId0, width_, height_, device_frame_ptr, (int)encoder_input_frame->pitch);
+            EncFrame(device_frame_ptr, rgba_frame_size);
+       
         }
     } while (n_video_bytes);
     EncFrame(NULL, 0);
